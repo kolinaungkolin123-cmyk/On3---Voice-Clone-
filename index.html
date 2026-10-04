@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Key Generator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
+<body style="font-family:sans-serif;max-width:420px;margin:30px auto;padding:0 16px">
+<h2>🔑 Key ထုတ်ရန်</h2>
+<input id="seed" type="password" placeholder="SEED ထည့်ပါ (တစ်ခါထည့်ရင် မှတ်ထားမယ်)" style="width:100%;padding:12px;margin:6px 0">
+<input id="days" type="number" placeholder="1. သက်တန်းရက်" style="width:100%;padding:12px;margin:6px 0">
+<button onclick="go()" style="width:100%;padding:14px;border:0;border-radius:10px;color:#fff;font-size:18px;background:linear-gradient(90deg,#ec4899,#3b82f6)">2. Key ထုတ်မည်</button>
+<h3>3. Key</h3>
+<textarea id="out" readonly rows="4" style="width:100%;padding:12px"></textarea>
+<button onclick="navigator.clipboard.writeText(out.value)" style="padding:10px">Copy</button>
+<p id="msg"></p>
+<script>
+seed.value = localStorage.getItem("seed") || "";
+const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const b64u = u => btoa(String.fromCharCode(...u)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+function go(){
+  try{
+    const d = parseInt(days.value);
+    if(!d || d < 1) throw new Error("ရက်အရေအတွက် မှားနေသည်");
+    const kp = nacl.sign.keyPair.fromSeed(b64(seed.value.trim()));
+    localStorage.setItem("seed", seed.value.trim());
+    const exp = new Date(Date.now() + d*864e5).toISOString().slice(0,10).replace(/-/g,"");
+    const rid = Array.from(crypto.getRandomValues(new Uint8Array(4)))
+                  .map(x=>x.toString(16).padStart(2,"0")).join("").toUpperCase();
+    const payload = `VIP.${exp}.${rid}`;
+    const sig = nacl.sign.detached(new TextEncoder().encode(payload), kp.secretKey);
+    out.value = `${payload}.${b64u(sig)}`;
+    msg.innerText = "✅ အောင်မြင်ပါသည် — သက်တမ်းကုန်ရက် " + exp;
+  }catch(e){ msg.innerText = "❌ " + e.message; }
+}
+</script>
+</body>
