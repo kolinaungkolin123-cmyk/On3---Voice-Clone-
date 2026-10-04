@@ -80,6 +80,18 @@ button.back {background:#f3f4f6 !important; border:1px solid #ccc !important;}
 @keyframes r {to {transform:rotate(360deg);}}
 """
 
+# ---------- JS ----------
+JS_LOAD_KEY = "() => { try { return localStorage.getItem('on3_key') || ''; } catch(e) { return ''; } }"
+JS_SAVE_KEY = "(k) => { try { if (k) localStorage.setItem('on3_key', k); } catch(e) {} }"
+JS_CLEAR_KEY = "() => { try { localStorage.removeItem('on3_key'); } catch(e) {} }"
+JS_DOWNLOAD = """(f) => {
+  if (!f) return;
+  const u = f.url || f.path || f;
+  const a = document.createElement('a');
+  a.href = u; a.download = f.orig_name || 'voice.mp3';
+  document.body.appendChild(a); a.click(); a.remove();
+}"""
+
 def prepare_ref(file):
     if file is None: return None
     src = file if isinstance(file, str) else file.name
@@ -111,6 +123,19 @@ def to1(key):
         gr.Warning(msg); return show(0) + [""]
     gr.Info(msg)
     return show(1) + [key.strip()]
+
+def auto_login(key):                       # သိမ်းထားတဲ့ Key နဲ့ အလိုအလျောက်ဝင်
+    key = (key or "").strip()
+    if not key:
+        return show(0) + [""]
+    ok, msg = check_key(key)
+    if not ok:
+        gr.Warning(msg); return show(0) + [""]
+    gr.Info(msg)
+    return show(1) + [key]
+
+def logout():
+    return show(0) + ["", ""]
 
 def to2(ref):
     if not ref:
@@ -170,7 +195,8 @@ with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
 
     with gr.Column(visible=True) as p0:
         gr.Markdown("### 🔑 Key ထည့်ပါ")
-        key_in = gr.Textbox(label="License Key", placeholder="VIP.20261019.XXXXXXXX....")
+        key_in = gr.Textbox(label="License Key (တစ်ခါထည့်ရင် မှတ်ထားမယ်)",
+                            placeholder="VIP.20261019.XXXXXXXX....")
         next0 = gr.Button("Next ▶", elem_classes="btn")
 
     with gr.Column(visible=False) as p1:
@@ -178,6 +204,7 @@ with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
         up = gr.File(label="Video / Audio ထည့်ပါ", file_types=["audio", "video"])
         ref_prev = gr.Audio(label="စမ်းနားထောင်ရန်", type="filepath", interactive=False)
         next1 = gr.Button("Next ▶", elem_classes="btn")
+        logout_btn = gr.Button("🔑 Key ပြောင်းမည်", elem_classes="back")
 
     with gr.Column(visible=False) as p2:
         gr.Markdown("### အဆင့် ၂ — စာထည့်ပါ")
@@ -193,17 +220,29 @@ with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
                              interactive=False)
         fname = gr.Textbox(label="MP3 ဖိုင်အမည် (မပေးလည်းရ)", placeholder="my_voice")
         dl_btn = gr.Button("⬇ MP3 ဒေါင်းလုဒ်", elem_classes="btn")
-        dl_file = gr.File(label="MP3 ဖိုင်")
+        dl_file = gr.File(label="MP3 ဖိုင် (မဒေါင်းရင် ဒီကနေ နှိပ်ပါ)")
         again = gr.Button("🔄 အသစ်ပြန်စမည်", elem_classes="back")
 
     pages = [p0, p1, p2, p3]
-    next0.click(to1, key_in, pages + [key_state])
+
+    # Key မှတ်ထားခြင်း
+    demo.load(None, None, key_in, js=JS_LOAD_KEY) \
+        .then(auto_login, key_in, pages + [key_state])
+    next0.click(to1, key_in, pages + [key_state]) \
+         .then(None, key_state, None, js=JS_SAVE_KEY)
+    logout_btn.click(logout, None, pages + [key_in, key_state]) \
+              .then(None, None, None, js=JS_CLEAR_KEY)
+
     up.change(prepare_ref, up, ref_prev)
     next1.click(to2, ref_prev, pages)
     back2.click(lambda: show(1), None, pages)
     next2.click(to3, text, pages + [status, out_audio, wav_state, dl_file]) \
          .then(generate, [key_state, ref_prev, text], [status, out_audio, wav_state])
-    dl_btn.click(make_mp3, [wav_state, fname], dl_file)
+
+    # နှိပ်တာနဲ့ တိုက်ရိုက်ဒေါင်း
+    dl_btn.click(make_mp3, [wav_state, fname], dl_file) \
+          .then(None, dl_file, None, js=JS_DOWNLOAD)
+
     again.click(restart, None, pages + [up, ref_prev, text, status, out_audio,
                                         wav_state, dl_file, fname])
 
