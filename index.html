@@ -1,35 +1,275 @@
 <!doctype html>
+<html lang="my">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Key Generator</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
-<body style="font-family:sans-serif;max-width:420px;margin:30px auto;padding:0 16px">
+<style>
+  body{font-family:sans-serif;max-width:480px;margin:20px auto;padding:0 14px;background:#fff;color:#000}
+  h2{margin:18px 0 8px}
+  .card{border:1px solid #ddd;border-radius:12px;padding:12px;margin:10px 0}
+  label{display:block;font-weight:600;margin:8px 0 4px}
+  input,select,textarea{width:100%;box-sizing:border-box;padding:11px;font-size:16px;border:1px solid #ccc;border-radius:8px;background:#fff;color:#000}
+  button{padding:12px;border:0;border-radius:10px;font-size:16px;font-weight:700;margin-top:8px;cursor:pointer}
+  .btn{width:100%;color:#fff;background:linear-gradient(90deg,#ec4899,#3b82f6)}
+  .btn:disabled{opacity:.5}
+  .gray{background:#f3f4f6;border:1px solid #ccc;color:#000}
+  .del{background:#fee2e2;color:#b91c1c}
+  .res{background:#dcfce7;color:#166534}
+  small{color:#666}
+  #msg{font-weight:600;min-height:22px}
+  .row{display:flex;gap:8px}
+  .row>div{flex:1}
+  .item{border:1px solid #ddd;border-radius:12px;padding:12px;margin:8px 0}
+  .item.gone{background:#f9fafb;opacity:.75}
+  .tag{display:inline-block;padding:2px 10px;border-radius:99px;font-size:13px;font-weight:700}
+  .t-ok{background:#dcfce7;color:#166534}
+  .t-exp{background:#fef3c7;color:#92400e}
+  .t-del{background:#fee2e2;color:#b91c1c}
+  .meta{font-size:14px;color:#333;line-height:1.7;margin:6px 0}
+  .acts{display:flex;gap:8px}
+  .acts button{flex:1;margin-top:4px;padding:10px}
+</style>
+<body>
 <h2>🔑 Key ထုတ်ရန်</h2>
-<input id="seed" type="password" placeholder="SEED ထည့်ပါ (တစ်ခါထည့်ရင် မှတ်ထားမယ်)" style="width:100%;padding:12px;margin:6px 0">
-<input id="days" type="number" placeholder="1. သက်တန်းရက်" style="width:100%;padding:12px;margin:6px 0">
-<button onclick="go()" style="width:100%;padding:14px;border:0;border-radius:10px;color:#fff;font-size:18px;background:linear-gradient(90deg,#ec4899,#3b82f6)">2. Key ထုတ်မည်</button>
-<h3>3. Key</h3>
-<textarea id="out" readonly rows="4" style="width:100%;padding:12px"></textarea>
-<button onclick="navigator.clipboard.writeText(out.value)" style="padding:10px">Copy</button>
+
+<div class="card">
+  <label>SEED</label>
+  <input id="seed" type="password" placeholder="SEED ထည့်ပါ">
+  <label>GitHub Token</label>
+  <input id="tok" type="password" placeholder="github_pat_...">
+  <small>တစ်ခါထည့်ရင် ဒီဖုန်းမှာ မှတ်ထားမယ်</small>
+</div>
+
+<div class="card">
+  <label>1. သက်တန်းရက်</label>
+  <input id="days" type="number" min="1" inputmode="numeric" placeholder="ဥပမာ 15">
+  <button class="btn" id="genBtn" onclick="gen()">2. Key ထုတ်မည်</button>
+  <label>3. Key</label>
+  <textarea id="out" readonly rows="4"></textarea>
+  <button class="gray" onclick="copyText($('out').value)">Copy</button>
+</div>
+
 <p id="msg"></p>
+
+<h2>📜 History</h2>
+<div class="card">
+  <div class="row">
+    <div><label>Days ရှာရန်</label><input id="fDays" type="number" min="1" inputmode="numeric" placeholder="ဥပမာ 1" oninput="render()"></div>
+    <div><label>ထုတ်ခဲ့တဲ့နေ့</label><input id="fDate" type="date" oninput="render()"></div>
+  </div>
+  <label>အခြေအနေ</label>
+  <select id="fStatus" onchange="render()">
+    <option value="all">အားလုံး</option>
+    <option value="active">သုံးလို့ရတာ</option>
+    <option value="expired">သက်တမ်းကုန်တာ</option>
+    <option value="deleted">ဖျက်ထားတာ</option>
+  </select>
+  <div class="row">
+    <button class="gray" style="flex:1" onclick="clearFilter()">ရှင်းမည်</button>
+    <button class="gray" style="flex:1" onclick="refresh()">🔄 ပြန်ဖတ်မည်</button>
+  </div>
+  <p id="count" style="margin:10px 0 0"></p>
+</div>
+<div id="list"></div>
+
 <script>
-seed.value = localStorage.getItem("seed") || "";
+const OWNER = "kolinaungkolin123-cmyk";
+const REPO = "On3---Voice-Clone-";
+const BRANCH = "main";
+
+const $ = id => document.getElementById(id);
+const LS = {
+  get: k => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} }
+};
 const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
-const b64u = u => btoa(String.fromCharCode(...u)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
-function go(){
-  try{
-    const d = parseInt(days.value);
-    if(!d || d < 1) throw new Error("ရက်အရေအတွက် မှားနေသည်");
-    const kp = nacl.sign.keyPair.fromSeed(b64(seed.value.trim()));
-    localStorage.setItem("seed", seed.value.trim());
-    const exp = new Date(Date.now() + d*864e5).toISOString().slice(0,10).replace(/-/g,"");
-    const rid = Array.from(crypto.getRandomValues(new Uint8Array(4)))
-                  .map(x=>x.toString(16).padStart(2,"0")).join("").toUpperCase();
-    const payload = `VIP.${exp}.${rid}`;
-    const sig = nacl.sign.detached(new TextEncoder().encode(payload), kp.secretKey);
-    out.value = `${payload}.${b64u(sig)}`;
-    msg.innerText = "✅ အောင်မြင်ပါသည် — သက်တမ်းကုန်ရက် " + exp;
-  }catch(e){ msg.innerText = "❌ " + e.message; }
+const b64u = u => btoa(String.fromCharCode(...u)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const enc = s => btoa(unescape(encodeURIComponent(s)));
+const dec = s => decodeURIComponent(escape(atob(s.replace(/\n/g, ""))));
+const token = () => $("tok").value.trim();
+const todayUTC = () => new Date().toISOString().slice(0, 10).replace(/-/g, "");
+
+let DB = [];
+
+function say(t, ok) {
+  const m = $("msg");
+  m.textContent = t;
+  m.style.color = ok === false ? "#b91c1c" : ok === true ? "#166534" : "#000";
 }
+
+async function copyText(t) {
+  if (!t) return say("Copy လုပ်စရာမရှိပါ", false);
+  try { await navigator.clipboard.writeText(t); say("✅ Copy ပြီးပါပြီ", true); }
+  catch (e) { say("Copy မရပါ — ကိုယ်တိုင်ရွေးကူးပါ", false); }
+}
+
+/* ---------- GitHub ---------- */
+const H = () => ({ Authorization: "Bearer " + token(), Accept: "application/vnd.github+json" });
+const API = p => `https://api.github.com/repos/${OWNER}/${REPO}/contents/${p}`;
+
+async function ghGet(path) {
+  const r = await fetch(`${API(path)}?ref=${BRANCH}&t=${Date.now()}`, { headers: H() });
+  if (r.status === 404) return { text: "", sha: null };
+  if (!r.ok) throw new Error("GitHub error " + r.status + (r.status === 401 ? " (Token မှားနေသည်)" : ""));
+  const j = await r.json();
+  return { text: dec(j.content), sha: j.sha };
+}
+
+async function ghPut(path, text, sha, m) {
+  const body = { message: m, content: enc(text), branch: BRANCH };
+  if (sha) body.sha = sha;
+  const r = await fetch(API(path), {
+    method: "PUT",
+    headers: { ...H(), "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    let why = "";
+    if (r.status === 401 || r.status === 403 || r.status === 404) why = " (Token ခွင့်ပြုချက် စစ်ပါ — Contents: Read and write)";
+    if (r.status === 409 || r.status === 422) why = " (ပြန်ကြိုးစားပါ)";
+    throw new Error("သိမ်းမရပါ " + r.status + why);
+  }
+}
+
+async function loadDB() {
+  const f = await ghGet("keys.json");
+  let list = [];
+  try { list = JSON.parse(f.text || "[]"); } catch (e) {}
+  return { list, sha: f.sha };
+}
+
+async function saveDB(list, sha, m) {
+  await ghPut("keys.json", JSON.stringify(list, null, 1), sha, m);
+  const rv = await ghGet("revoked.txt");
+  const ids = list.filter(x => x.revoked).map(x => x.id);
+  await ghPut("revoked.txt", "# revoked ids\n" + ids.join("\n") + "\n", rv.sha, m);
+}
+
+/* ---------- Key ---------- */
+function makeKey(rec) {
+  const kp = nacl.sign.keyPair.fromSeed(b64($("seed").value.trim()));
+  const payload = `VIP.${rec.exp}.${rec.id}`;
+  const sig = nacl.sign.detached(new TextEncoder().encode(payload), kp.secretKey);
+  return `${payload}.${b64u(sig)}`;
+}
+
+function busy(b) { $("genBtn").disabled = b; }
+
+async function gen() {
+  try {
+    busy(true);
+    say("လုပ်ဆောင်နေသည်...");
+    if (!token()) throw new Error("GitHub Token ထည့်ပါ");
+    const d = parseInt($("days").value);
+    if (!d || d < 1) throw new Error("ရက်အရေအတွက် မှားနေသည်");
+    const exp = new Date(Date.now() + d * 864e5).toISOString().slice(0, 10).replace(/-/g, "");
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(4)))
+      .map(x => x.toString(16).padStart(2, "0")).join("").toUpperCase();
+    const rec = { id, exp, days: d, created: new Date().toISOString(), revoked: false };
+    let key;
+    try { key = makeKey(rec); } catch (e) { throw new Error("SEED မှားနေသည်"); }
+
+    const { list, sha } = await loadDB();
+    list.push(rec);
+    await saveDB(list, sha, "add key " + id);
+
+    $("out").value = key;
+    DB = list;
+    render();
+    say("✅ အောင်မြင်ပါသည် — သက်တမ်းကုန်ရက် " + exp, true);
+  } catch (e) {
+    say("❌ " + e.message, false);
+  } finally { busy(false); }
+}
+
+async function setRevoked(id, val) {
+  try {
+    if (val && !confirm("ဒီ Key ကို ဖျက်မလား?\nဖျက်ရင် app မှာ သုံးလို့မရတော့ပါ။")) return;
+    say("လုပ်ဆောင်နေသည်...");
+    const { list, sha } = await loadDB();
+    const r = list.find(x => x.id === id);
+    if (!r) throw new Error("Key မတွေ့ပါ");
+    r.revoked = val;
+    await saveDB(list, sha, (val ? "revoke " : "restore ") + id);
+    DB = list;
+    render();
+    say(val ? "🗑️ ဖျက်ပြီးပါပြီ (app မှာ ၁–၅ မိနစ်အတွင်း ပိတ်သွားမယ်)" : "♻️ ပြန်ဖွင့်ပြီးပါပြီ", true);
+  } catch (e) { say("❌ " + e.message, false); }
+}
+
+async function copyKey(id) {
+  const r = DB.find(x => x.id === id);
+  if (!r) return;
+  try { await copyText(makeKey(r)); }
+  catch (e) { say("❌ SEED ထည့်ပါ", false); }
+}
+
+/* ---------- History ---------- */
+function status(r) {
+  if (r.revoked) return ["ဖျက်ပြီး", "t-del", "deleted"];
+  if (r.exp < todayUTC()) return ["သက်တမ်းကုန်", "t-exp", "expired"];
+  const left = Math.round((Date.UTC(+r.exp.slice(0,4), +r.exp.slice(4,6)-1, +r.exp.slice(6,8))
+    - Date.UTC(+todayUTC().slice(0,4), +todayUTC().slice(4,6)-1, +todayUTC().slice(6,8))) / 864e5);
+  return ["သုံးလို့ရ (ကျန် " + left + " ရက်)", "t-ok", "active"];
+}
+
+function fmt(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-CA") + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function render() {
+  const fd = $("fDays").value.trim();
+  const fdate = $("fDate").value;
+  const fs = $("fStatus").value;
+  let rows = DB.slice().reverse().filter(r => {
+    if (fd && String(r.days) !== String(parseInt(fd))) return false;
+    if (fdate && new Date(r.created).toLocaleDateString("en-CA") !== fdate) return false;
+    if (fs !== "all" && status(r)[2] !== fs) return false;
+    return true;
+  });
+  $("count").textContent = `စုစုပေါင်း ${rows.length} ခု (အားလုံး ${DB.length} ခု)`;
+  $("list").innerHTML = rows.map(r => {
+    const [label, cls] = status(r);
+    return `<div class="item ${r.revoked ? "gone" : ""}">
+      <span class="tag ${cls}">${label}</span>
+      <div class="meta">
+        🆔 ${r.id}<br>
+        📅 ထုတ်တဲ့နေ့: ${fmt(r.created)}<br>
+        ⏳ သက်တန်း: ${r.days} ရက် · ကုန်ရက်: ${r.exp}
+      </div>
+      <div class="acts">
+        <button class="gray" onclick="copyKey('${r.id}')">Copy Key</button>
+        ${r.revoked
+          ? `<button class="res" onclick="setRevoked('${r.id}', false)">♻️ ပြန်ဖွင့်</button>`
+          : `<button class="del" onclick="setRevoked('${r.id}', true)">🗑️ ဖျက်မည်</button>`}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function clearFilter() {
+  $("fDays").value = ""; $("fDate").value = ""; $("fStatus").value = "all";
+  render();
+}
+
+async function refresh() {
+  try {
+    if (!token()) throw new Error("GitHub Token ထည့်ပါ");
+    say("ဖတ်နေသည်...");
+    DB = (await loadDB()).list;
+    render();
+    say("✅ History ဖတ်ပြီးပါပြီ", true);
+  } catch (e) { say("❌ " + e.message, false); }
+}
+
+/* ---------- init ---------- */
+$("seed").value = LS.get("kg_seed");
+$("tok").value = LS.get("kg_tok");
+$("seed").addEventListener("change", () => LS.set("kg_seed", $("seed").value.trim()));
+$("tok").addEventListener("change", () => { LS.set("kg_tok", $("tok").value.trim()); refresh(); });
+if (token()) refresh();
 </script>
 </body>
+</html>
