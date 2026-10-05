@@ -1,6 +1,6 @@
 import sys, subprocess
 subprocess.run([sys.executable, "-m", "pip", "install", "-q",
-                "voxcpm", "gradio", "soundfile", "numpy", "pynacl"])
+                "voxcpm==2.0.3", "gradio", "soundfile", "numpy", "pynacl"])
 
 import os, re, uuid, base64, datetime, urllib.request
 import numpy as np
@@ -13,6 +13,8 @@ from voxcpm import VoxCPM
 PUBLIC_KEY = "IhTp+Sk042q9A1Oa04ifQFEWbUcBKv1AE2ZkwBKCawg="
 REVOKED_URL = "https://raw.githubusercontent.com/kolinaungkolin123-cmyk/On3---Voice-Clone-/main/revoked.txt"
 # =====================================
+
+MAX_CHUNK = 300   # ဒီထက်တိုတဲ့စာကို အပိုင်းမခွဲဘဲ တစ်ဆက်တည်းထုတ်မယ်
 
 def check_key(key):
     try:
@@ -126,8 +128,10 @@ def cut_long(s, maxlen):
     if s: out.append(s)
     return out
 
-def split_text(t, maxlen=160, minlen=25):
+def split_text(t, maxlen=MAX_CHUNK, minlen=25):
     t = clean_text(t)
+    if len(t) <= maxlen:                       # တိုရင် တစ်ပိုင်းတည်း
+        return [t]
     sents = [s.strip() for s in re.split(r"(?<=[။!?])\s*|\n+", t) if s and s.strip()]
     pieces = []
     for s in sents:
