@@ -80,7 +80,6 @@ button.back {background:#f3f4f6 !important; border:1px solid #ccc !important;}
 @keyframes r {to {transform:rotate(360deg);}}
 """
 
-# ---------- JS ----------
 JS_LOAD_KEY = "() => { try { return localStorage.getItem('on3_key') || ''; } catch(e) { return ''; } }"
 JS_SAVE_KEY = "(k) => { try { if (k) localStorage.setItem('on3_key', k); } catch(e) {} }"
 JS_CLEAR_KEY = "() => { try { localStorage.removeItem('on3_key'); } catch(e) {} }"
@@ -92,28 +91,111 @@ JS_DOWNLOAD = """(f) => {
   document.body.appendChild(a); a.click(); a.remove();
 }"""
 
+QUALITY = {"မြန် (စမ်းရန်)": 12, "ပုံမှန် (အကြံပြု)": 20, "အကောင်းဆုံး (နှေး)": 32}
+
+# ---------- Reference ----------
 def prepare_ref(file):
     if file is None: return None
     src = file if isinstance(file, str) else file.name
     out = f"work/ref_{uuid.uuid4().hex[:8]}.wav"
-    subprocess.run(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000",
-                    "-t", "30", out], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    filters = ("silenceremove=start_periods=1:start_threshold=-45dB,"
+               "highpass=f=80,loudnorm=I=-20:TP=-2")
+    base = ["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-t", "15"]
+    try:
+        subprocess.run(base + ["-af", filters, out], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        subprocess.run(base + [out], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return out
 
-def split_text(t, maxlen=100):
-    parts = [p.strip() for p in re.split(r"(?<=[။!?\n])", t) if p.strip()]
+# ---------- Text ----------
+def clean_text(t):
+    t = t.replace("\r", "")
+    t = re.sub(r"[\U00010000-\U0010ffff\u2600-\u27bf]", "", t)   # emoji ဖယ်
+    t = re.sub(r"[^\S\n]+", " ", t)
+    return t.strip()
+
+def cut_long(s, maxlen):
+    out = []
+    while len(s) > maxlen:
+        win = s[:maxlen]
+        k = max(win.rfind("၊"), win.rfind(" "), win.rfind(","))
+        if k < maxlen // 2: k = maxlen - 1
+        out.append(s[:k + 1].strip()); s = s[k + 1:].strip()
+    if s: out.append(s)
+    return out
+
+def split_text(t, maxlen=160, minlen=25):
+    t = clean_text(t)
+    sents = [s.strip() for s in re.split(r"(?<=[။!?])\s*|\n+", t) if s and s.strip()]
+    pieces = []
+    for s in sents:
+        pieces += cut_long(s, maxlen)
     chunks, cur = [], ""
-    for p in parts:
-        if len(cur) + len(p) <= maxlen: cur += p
+    for s in pieces:
+        if cur and len(cur) + 1 + len(s) > maxlen:
+            chunks.append(cur); cur = s
         else:
-            if cur: chunks.append(cur)
-            while len(p) > maxlen:
-                chunks.append(p[:maxlen]); p = p[maxlen:]
-            cur = p
+            cur = (cur + " " + s).strip() if cur else s
     if cur: chunks.append(cur)
+    if len(chunks) > 1 and len(chunks[-1]) < minlen:
+        chunks[-2] += " " + chunks.pop()
     return chunks
 
+# ---------- Audio ----------
+def call_gen(**kw):
+    optional = ["retry_badcase", "retry_badcase_max_times", "normalize",
+                "denoise", "prompt_wav_path", "prompt_text"]
+    while True:
+        try:
+            return model.generate(**kw)
+        except TypeError as e:
+            bad = next((k for k in optional if k in kw and k in str(e)), None)
+            if not bad: raise
+            kw.pop(bad)
+
+def gen_chunk(text, ref, ref_text, steps):
+    best = None
+    for _ in range(3):
+        kw = dict(text=text, reference_wav_path=ref, cfg_value=2.0,
+                  inference_timesteps=steps, retry_badcase=True,
+                  retry_badcase_max_times=3, normalize=False, denoise=False)
+        if ref_text:
+            kw.update(prompt_wav_path=ref, prompt_text=ref_text)
+        w = np.asarray(call_gen(**kw), dtype=np.float32).squeeze()
+        best = w
+        spc = len(w) / SR / max(len(text.replace(" ", "")), 1)   # စက္ကန့်/စာလုံး
+        if 0.04 <= spc <= 0.30:
+            break
+    return best
+
+def tidy(w):
+    w = w.astype(np.float32).copy()
+    m = float(np.abs(w).max()) or 1.0
+    idx = np.where(np.abs(w) > 0.02 * m)[0]
+    if len(idx):
+        pad = int(0.05 * SR)
+        w = w[max(idx[0] - pad, 0): idx[-1] + pad]
+    rms = float(np.sqrt(np.mean(w ** 2))) + 1e-8
+    w = np.clip(w * min(0.1 / rms, 4.0), -1, 1)
+    f = int(0.015 * SR)
+    if len(w) > 2 * f:
+        w[:f] *= np.linspace(0, 1, f, dtype=np.float32)
+        w[-f:] *= np.linspace(1, 0, f, dtype=np.float32)
+    return w
+
+def join_audio(parts):
+    gap = np.zeros(int(SR * 0.20), dtype=np.float32)
+    out = []
+    for i, p in enumerate(parts):
+        out.append(tidy(p))
+        if i < len(parts) - 1: out.append(gap)
+    y = np.concatenate(out)
+    peak = float(np.abs(y).max()) or 1.0
+    return (y / peak * 0.95).astype(np.float32)
+
+# ---------- Pages ----------
 def show(n):
     return [gr.update(visible=(i == n)) for i in range(4)]
 
@@ -124,7 +206,7 @@ def to1(key):
     gr.Info(msg)
     return show(1) + [key.strip()]
 
-def auto_login(key):                       # သိမ်းထားတဲ့ Key နဲ့ အလိုအလျောက်ဝင်
+def auto_login(key):
     key = (key or "").strip()
     if not key:
         return show(0) + [""]
@@ -148,9 +230,9 @@ def to3(text):
     return show(3) + [render(["run", "wait", "wait", "wait"]), None, None, None]
 
 def restart():
-    return show(1) + [None, None, "", IDLE, None, None, None, ""]
+    return show(1) + [None, None, "", "", IDLE, None, None, None, ""]
 
-def generate(key, ref_audio, text):
+def generate(key, ref_audio, text, ref_text, quality):
     st = ["run", "wait", "wait", "wait"]
     yield render(st), None, None
     ok, msg = check_key(key)
@@ -158,20 +240,20 @@ def generate(key, ref_audio, text):
         st[0] = "err"
         yield render(st, {0: msg if not ok else "အချက်အလက်မပြည့်စုံပါ"}), None, None; return
     st[0] = "done"; st[1] = "run"; yield render(st, {0: msg}), None, None
-    chunks = split_text(text.strip()); n = len(chunks)
+    chunks = split_text(text); n = len(chunks)
     st[1] = "done"; st[2] = "run"
     info = {0: msg, 1: f"{n} အပိုင်း", 2: f"0/{n}"}
     yield render(st, info), None, None
     try:
-        gap = np.zeros(int(SR * 0.25), dtype=np.float32); wavs = []
+        steps = QUALITY.get(quality, 20)
+        rt = (ref_text or "").strip()
+        parts = []
         for i, c in enumerate(chunks, 1):
-            w = model.generate(text=c, reference_wav_path=ref_audio,
-                               cfg_value=2.0, inference_timesteps=10)
-            wavs += [np.asarray(w, dtype=np.float32), gap]
+            parts.append(gen_chunk(c, ref_audio, rt, steps))
             info[2] = f"{i}/{n}"
             yield render(st, info), None, None
         p = f"work/out_{uuid.uuid4().hex[:8]}.wav"
-        sf.write(p, np.concatenate(wavs), SR)
+        sf.write(p, join_audio(parts), SR)
         st[2] = "done"; st[3] = "done"
         yield render(st, info), p, p
     except Exception as e:
@@ -189,6 +271,7 @@ def make_mp3(wav_path, name):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return mp3
 
+# ---------- UI ----------
 with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
     gr.Markdown("# 🎙️ မြန်မာ Voice Clone (VoxCPM2)")
     wav_state, key_state = gr.State(), gr.State("")
@@ -201,14 +284,21 @@ with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
 
     with gr.Column(visible=False) as p1:
         gr.Markdown("### အဆင့် ၁ — Video သို့မဟုတ် Audio")
+        gr.Markdown("💡 ဆူညံသံမရှိတဲ့ ၈–၁၅ စက္ကန့် အသံက အကောင်းဆုံးပါ")
         up = gr.File(label="Video / Audio ထည့်ပါ", file_types=["audio", "video"])
         ref_prev = gr.Audio(label="စမ်းနားထောင်ရန်", type="filepath", interactive=False)
+        ref_text = gr.Textbox(
+            label="Reference အသံထဲမှာ ပြောထားတဲ့စာ (မဖြည့်လည်းရ)",
+            info="အသံနဲ့ တစ်လုံးမကွာအောင် မှန်မှန်ရေးမှ ဖြည့်ပါ၊ ဖြည့်ရင် အသံပိုတည်ငြိမ်ပါတယ်",
+            lines=2)
         next1 = gr.Button("Next ▶", elem_classes="btn")
         logout_btn = gr.Button("🔑 Key ပြောင်းမည်", elem_classes="back")
 
     with gr.Column(visible=False) as p2:
         gr.Markdown("### အဆင့် ၂ — စာထည့်ပါ")
         text = gr.Textbox(label="ပြောစေချင်တဲ့ မြန်မာစာ", lines=7)
+        quality = gr.Dropdown(list(QUALITY.keys()), value="ပုံမှန် (အကြံပြု)",
+                              label="အရည်အသွေး (မြင့်ရင် ပိုကြာတယ်)")
         with gr.Row():
             back2 = gr.Button("◀ Back", elem_classes="back")
             next2 = gr.Button("Next ▶", elem_classes="btn")
@@ -225,7 +315,6 @@ with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
 
     pages = [p0, p1, p2, p3]
 
-    # Key မှတ်ထားခြင်း
     demo.load(None, None, key_in, js=JS_LOAD_KEY) \
         .then(auto_login, key_in, pages + [key_state])
     next0.click(to1, key_in, pages + [key_state]) \
@@ -237,13 +326,13 @@ with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
     next1.click(to2, ref_prev, pages)
     back2.click(lambda: show(1), None, pages)
     next2.click(to3, text, pages + [status, out_audio, wav_state, dl_file]) \
-         .then(generate, [key_state, ref_prev, text], [status, out_audio, wav_state])
+         .then(generate, [key_state, ref_prev, text, ref_text, quality],
+               [status, out_audio, wav_state])
 
-    # နှိပ်တာနဲ့ တိုက်ရိုက်ဒေါင်း
     dl_btn.click(make_mp3, [wav_state, fname], dl_file) \
           .then(None, dl_file, None, js=JS_DOWNLOAD)
 
-    again.click(restart, None, pages + [up, ref_prev, text, status, out_audio,
-                                        wav_state, dl_file, fname])
+    again.click(restart, None, pages + [up, ref_prev, text, ref_text, status,
+                                        out_audio, wav_state, dl_file, fname])
 
 demo.queue().launch(share=True, debug=True)
