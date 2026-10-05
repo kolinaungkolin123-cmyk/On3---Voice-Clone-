@@ -1,2 +1,4 @@
 # revoked ids
 CFE8FC7E
+B070258D
+A72C52B4
