@@ -1,6 +1,18 @@
 import sys, subprocess
-subprocess.run([sys.executable, "-m", "pip", "install", "-q",
-                "voxcpm==2.0.3", "gradio", "soundfile", "numpy", "pynacl"])
+from importlib.metadata import version as _v, PackageNotFoundError
+
+def _need(pkg, ver=None):
+    try:
+        return ver is not None and _v(pkg) != ver
+    except PackageNotFoundError:
+        return True
+
+_todo = [p for p, ver in [("voxcpm", "2.0.3"), ("gradio", None), ("soundfile", None),
+                          ("numpy", None), ("pynacl", None)] if _need(p, ver)]
+if _todo:
+    print("🔧 Package တပ်ဆင်နေပါသည်...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q"] +
+                   [f"{p}==2.0.3" if p == "voxcpm" else p for p in _todo])
 
 import os, re, uuid, time, math, base64, hashlib, threading, datetime
 import urllib.request, urllib.parse
@@ -9,6 +21,12 @@ import gradio as gr
 import soundfile as sf
 from nacl.signing import VerifyKey
 from voxcpm import VoxCPM
+
+# ပြန် Run ရင် အရင် server ကို ပိတ်
+try:
+    gr.close_all()
+except Exception:
+    pass
 
 # ====== ဒီနေရာတွေကို ပြင်ပါ ======
 PUBLIC_KEY = "IhTp+Sk042q9A1Oa04ifQFEWbUcBKv1AE2ZkwBKCawg="
@@ -79,15 +97,19 @@ def heartbeat(key, request: gr.Request):
     sid, ip = who(request)
     _send({"action": "ping", "sid": sid, "ip": ip, "k": rid_of(key)})
 
-# ---------- Model ----------
-print("⏳ VoxCPM2 Model ဆွဲတင်နေပါသည်...")
-try:
-    model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False, optimize=False)
-except TypeError:
-    model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False)
+# ---------- Model (ရှိပြီးသားဆိုရင် ပြန်မဆွဲ) ----------
+if globals().get("_MODEL_READY") and "model" in globals():
+    print("♻️ Model ရှိပြီးသားကို ပြန်သုံးပါမည်")
+else:
+    print("⏳ VoxCPM2 Model ဆွဲတင်နေပါသည်...")
+    try:
+        model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False, optimize=False)
+    except TypeError:
+        model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False)
+    _MODEL_READY = True
+    print("✅ Model အဆင်သင့်ဖြစ်ပါပြီ")
 SR = model.tts_model.sample_rate
 os.makedirs("work", exist_ok=True)
-print("✅ Model အဆင်သင့်ဖြစ်ပါပြီ")
 
 STEPS = ["Key စစ်ဆေးခြင်း", "စာကို အပိုင်းခွဲခြင်း",
          "Clone လုပ်ပြီး အသံထုတ်ခြင်း", "ပြီးစီးပါပြီ"]
@@ -171,7 +193,7 @@ def prepare_ref(file):
     return out
 
 # ---------- Text ----------
-MAX_CHUNK = 150          # အပိုင်းတိုလေ မြန်လေ၊ မရပ်တဲ့ပြဿနာ နည်းလေ
+MAX_CHUNK = 150
 
 def clean_text(t):
     t = t.replace("\r", "")
@@ -221,7 +243,7 @@ def gen_chunk(text, ref, steps):
     n_chars = len(text.replace(" ", ""))
     w = call_gen(text=text, reference_wav_path=ref, cfg_value=2.0,
                  inference_timesteps=steps,
-                 max_len=min(900, n_chars * 4 + 120),      # မရပ်ဘဲ ဆက်ထုတ်တာကို ကန့်သတ်
+                 max_len=min(900, n_chars * 4 + 120),
                  retry_badcase=True, retry_badcase_max_times=1,
                  normalize=False, denoise=False)
     return np.asarray(w, dtype=np.float32).squeeze()
@@ -398,4 +420,27 @@ with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
     again.click(restart, None, pages + [up, ref_prev, text, status,
                                         out_audio, wav_state, dl_file, fname])
 
-demo.queue().launch(share=True, debug=True)
+# ---------- Launch (cell ပြီးသွားမယ်၊ server နောက်ကွယ်မှာ ဆက်အလုပ်လုပ်မယ်) ----------
+demo.queue()
+_app, _local, _share = demo.launch(share=True, prevent_thread_lock=True,
+                                   quiet=True, show_error=True)
+URL = _share or _local
+
+try:
+    from IPython.display import display, HTML
+    display(HTML(f"""
+    <div style="background:#000;border:2px solid #ec4899;border-radius:14px;padding:18px;
+                text-align:center;font-family:sans-serif;color:#fff">
+      <div style="font-size:20px;font-weight:700;margin-bottom:12px">✅ Website အဆင်သင့်ဖြစ်ပါပြီ</div>
+      <a href="{URL}" target="_blank"
+         style="display:block;padding:14px;border-radius:10px;color:#fff;text-decoration:none;
+                font-size:18px;font-weight:700;background:linear-gradient(90deg,#ec4899,#3b82f6)">
+         🌐 WEBSITE ဖွင့်ရန်</a>
+      <div style="margin-top:10px;font-size:14px;color:#aaa;word-break:break-all">{URL}</div>
+      <div style="margin-top:10px;font-size:13px;color:#aaa">
+         Link မဖွင့်ရင် အပေါ်က URL ကို Copy လုပ်ပြီး Browser မှာ Paste လုပ်ပါ။<br>
+         ရပ်သွားရင် ဒီ cell ကို ပြန် Run ပါ (Link အသစ်ထွက်မယ်)။</div>
+    </div>"""))
+except Exception:
+    pass
+print("🌐 WEBSITE LINK:", URL)
