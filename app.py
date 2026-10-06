@@ -1,18 +1,27 @@
-import sys, subprocess
-from importlib.metadata import version as _v, PackageNotFoundError
+import sys, subprocess, importlib
 
-def _need(pkg, ver=None):
+def _pip(*pkgs):
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", *pkgs],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print("⚠️ pip error:", pkgs, "\n", r.stderr[-800:])
+    return r.returncode == 0
+
+def _has(mod):
     try:
-        return ver is not None and _v(pkg) != ver
-    except PackageNotFoundError:
+        importlib.import_module(mod)
         return True
+    except Exception:
+        return False
 
-_todo = [p for p, ver in [("voxcpm", "2.0.3"), ("gradio", None), ("soundfile", None),
-                          ("numpy", None), ("pynacl", None)] if _need(p, ver)]
-if _todo:
-    print("🔧 Package တပ်ဆင်နေပါသည်...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q"] +
-                   [f"{p}==2.0.3" if p == "voxcpm" else p for p in _todo])
+print("🔧 Package စစ်ဆေးနေပါသည်...")
+for _pkg, _mod in [("pynacl", "nacl"), ("soundfile", "soundfile"),
+                   ("gradio", "gradio"), ("numpy", "numpy")]:
+    if not _has(_mod):
+        _pip(_pkg)
+if not _has("voxcpm"):
+    _pip("voxcpm==2.0.3")
+importlib.invalidate_caches()
 
 import os, re, uuid, time, math, base64, hashlib, threading, datetime
 import urllib.request, urllib.parse
