@@ -20,8 +20,8 @@ TRACKER_URL = ""   # Apps Script ရဲ့ /exec လင့် (မထည့်�
 def left_text(secs):
     if secs <= 0: return ""
     if secs < 3600: return f"{max(1, math.ceil(secs / 60))} မိနစ်"
-    if secs <= 86400: return f"{math.ceil(secs / 3600)} နာရီ"      # ၁ ရက်အောက် → နာရီ
-    return f"{math.ceil(secs / 86400)} ရက်"                         # ၂ ရက်ကျော် → ရက်
+    if secs <= 86400: return f"{math.ceil(secs / 3600)} နာရီ"
+    return f"{math.ceil(secs / 86400)} ရက်"
 
 def check_key(key):
     try:
@@ -29,10 +29,10 @@ def check_key(key):
         if pre != "VIP": raise ValueError
         sig = base64.urlsafe_b64decode(sig + "=" * (-len(sig) % 4))
         VerifyKey(base64.b64decode(PUBLIC_KEY)).verify(f"{pre}.{exp}.{rid}".encode(), sig)
-        if len(exp) == 8:      # Key အဟောင်း (ရက်စွဲ)
+        if len(exp) == 8:
             end = datetime.datetime.strptime(exp, "%Y%m%d").replace(
                 hour=23, minute=59, second=59, tzinfo=datetime.timezone.utc).timestamp()
-        else:                  # Key အသစ် (စက္ကန့်)
+        else:
             end = float(int(exp))
     except Exception:
         return False, "Key မှားနေပါသည်", ""
@@ -87,6 +87,7 @@ except TypeError:
     model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False)
 SR = model.tts_model.sample_rate
 os.makedirs("work", exist_ok=True)
+print("✅ Model အဆင်သင့်ဖြစ်ပါပြီ")
 
 STEPS = ["Key စစ်ဆေးခြင်း", "စာကို အပိုင်းခွဲခြင်း",
          "Clone လုပ်ပြီး အသံထုတ်ခြင်း", "ပြီးစီးပါပြီ"]
@@ -152,7 +153,7 @@ JS_DOWNLOAD = """(f) => {
   document.body.appendChild(a); a.click(); a.remove();
 }"""
 
-QUALITY = {"မြန်": 8, "ပုံမှန် (အကြံပြု)": 10, "ကောင်း (နှေးနိုင်)": 16}
+QUALITY = {"မြန်": 6, "ပုံမှန် (အကြံပြု)": 8, "ကောင်း (နှေးနိုင်)": 12}
 
 # ---------- Reference ----------
 def prepare_ref(file):
@@ -170,7 +171,7 @@ def prepare_ref(file):
     return out
 
 # ---------- Text ----------
-MAX_CHUNK = 300
+MAX_CHUNK = 150          # အပိုင်းတိုလေ မြန်လေ၊ မရပ်တဲ့ပြဿနာ နည်းလေ
 
 def clean_text(t):
     t = t.replace("\r", "")
@@ -207,7 +208,7 @@ def split_text(t, maxlen=MAX_CHUNK, minlen=25):
 
 # ---------- Audio ----------
 def call_gen(**kw):
-    optional = ["retry_badcase", "retry_badcase_max_times", "normalize", "denoise"]
+    optional = ["max_len", "retry_badcase", "retry_badcase_max_times", "normalize", "denoise"]
     while True:
         try:
             return model.generate(**kw)
@@ -217,15 +218,13 @@ def call_gen(**kw):
             kw.pop(bad)
 
 def gen_chunk(text, ref, steps):
-    w = None
-    for _ in range(2):
-        w = np.asarray(call_gen(text=text, reference_wav_path=ref, cfg_value=2.0,
-                                inference_timesteps=steps, retry_badcase=True,
-                                retry_badcase_max_times=2, normalize=False,
-                                denoise=False), dtype=np.float32).squeeze()
-        spc = len(w) / SR / max(len(text.replace(" ", "")), 1)
-        if 0.04 <= spc <= 0.30: break
-    return w
+    n_chars = len(text.replace(" ", ""))
+    w = call_gen(text=text, reference_wav_path=ref, cfg_value=2.0,
+                 inference_timesteps=steps,
+                 max_len=min(900, n_chars * 4 + 120),      # မရပ်ဘဲ ဆက်ထုတ်တာကို ကန့်သတ်
+                 retry_badcase=True, retry_badcase_max_times=1,
+                 normalize=False, denoise=False)
+    return np.asarray(w, dtype=np.float32).squeeze()
 
 def tidy(w):
     w = w.astype(np.float32).copy()
@@ -250,6 +249,10 @@ def join_audio(parts):
         if i < len(parts) - 1: out.append(gap)
     y = np.concatenate(out)
     return (y / (float(np.abs(y).max()) or 1.0) * 0.95).astype(np.float32)
+
+def mmss(s):
+    s = int(max(s, 0))
+    return f"{s // 60}:{s % 60:02d}"
 
 # ---------- Pages ----------
 def show(n):
@@ -278,6 +281,8 @@ def to2(ref):
 def to3(text):
     if not text or not text.strip():
         gr.Warning("စာထည့်ပါ"); return show(2) + [IDLE, None, None, None]
+    if len(text.strip()) > 1500:
+        gr.Warning("စာရှည်လွန်းပါတယ်။ ကြာနိုင်ပါတယ် — ၁၀၀၀ လုံးအောက် ခွဲထုတ်တာ ပိုကောင်းပါတယ်")
     return show(3) + [render(["run", "wait", "wait", "wait"]), None, None, None]
 
 def restart():
@@ -293,18 +298,22 @@ def generate(key, ref_audio, text, quality):
     st[0] = "done"; st[1] = "run"; yield render(st, {0: msg}), None, None
     chunks = split_text(text); n = len(chunks)
     st[1] = "done"; st[2] = "run"
-    info = {0: msg, 1: f"{n} အပိုင်း", 2: f"0/{n}"}
+    info = {0: msg, 1: f"{n} အပိုင်း", 2: f"စတင်နေသည် 0/{n}"}
     yield render(st, info), None, None
     try:
-        steps = QUALITY.get(quality, 10)
+        steps = QUALITY.get(quality, 8)
         parts = []
+        t0 = time.time()
         for i, c in enumerate(chunks, 1):
             parts.append(gen_chunk(c, ref_audio, steps))
-            info[2] = f"{i}/{n}"
+            el = time.time() - t0
+            eta = el / i * (n - i)
+            info[2] = f"{i}/{n} · {mmss(el)} ကြာပြီ · ကျန် ~{mmss(eta)}"
             yield render(st, info), None, None
         p = f"work/out_{uuid.uuid4().hex[:8]}.wav"
         sf.write(p, join_audio(parts), SR)
         st[2] = "done"; st[3] = "done"
+        info[2] = f"{n}/{n} · စုစုပေါင်း {mmss(time.time() - t0)}"
         yield render(st, info), p, p
     except Exception as e:
         st[2] = "err"; info[2] = f"အမှား: {e}"
