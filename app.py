@@ -173,47 +173,15 @@ button.back {background:rgba(255,255,255,.08) !important;
 @keyframes r {to {transform:rotate(360deg);}}
 """
 
-# ---------- Browser JS ----------
-JS_LOAD = """() => { try { return [localStorage.getItem('on3_key') || '',
-                                    localStorage.getItem('on3_job') || '']; }
-                     catch(e) { return ['', '']; } }"""
+JS_LOAD_KEY = "() => { try { return localStorage.getItem('on3_key') || ''; } catch(e) { return ''; } }"
 JS_SAVE_KEY = "(k) => { try { if (k) localStorage.setItem('on3_key', k); } catch(e) {} }"
 JS_CLEAR_KEY = "() => { try { localStorage.removeItem('on3_key'); } catch(e) {} }"
-JS_SAVE_JOB = """(j) => { try { if (j) localStorage.setItem('on3_job', j);
-                                else localStorage.removeItem('on3_job'); } catch(e) {} }"""
 JS_DOWNLOAD = """(f) => {
   if (!f) return;
   const u = f.url || f.path || f;
   const a = document.createElement('a');
   a.href = u; a.download = f.orig_name || 'voice.mp3';
   document.body.appendChild(a); a.click(); a.remove();
-}"""
-JS_NET = """() => {
-  if (window.__on3net) return;
-  window.__on3net = true;
-  const bar = document.createElement('div');
-  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;padding:12px 14px;' +
-                      'text-align:center;font-weight:700;color:#fff;display:none;font-size:15px;';
-  document.body.appendChild(bar);
-  let wasOff = !navigator.onLine;
-  const jobActive = () => { try { return !!localStorage.getItem('on3_job'); } catch(e) { return false; } };
-  const goOff = () => {
-    wasOff = true;
-    bar.style.background = '#b45309';
-    bar.textContent = '📡 လိုင်းပျက်နေပါသည် — ခနရပ်ထားပါသည်။ လိုင်းပြန်ရရင် ဆက်သွားပါမည်';
-    bar.style.display = 'block';
-  };
-  const goOn = () => {
-    bar.style.background = '#15803d';
-    bar.textContent = '✅ လိုင်းပြန်ရပါပြီ — ဆက်သွားနေပါသည်...';
-    bar.style.display = 'block';
-    if (wasOff && jobActive()) setTimeout(() => location.reload(), 2000);
-    else setTimeout(() => { bar.style.display = 'none'; }, 3000);
-    wasOff = false;
-  };
-  window.addEventListener('offline', goOff);
-  window.addEventListener('online', goOn);
-  if (!navigator.onLine) goOff();
 }"""
 
 QUALITY = {"မြန်": 6, "ပုံမှန် (အကြံပြု)": 8, "ကောင်း (နှေးနိုင်)": 12}
@@ -317,81 +285,6 @@ def mmss(s):
     s = int(max(s, 0))
     return f"{s // 60}:{s % 60:02d}"
 
-# ---------- Background jobs (လိုင်းပျက်လည်း Colab ပေါ်မှာ ဆက်အလုပ်လုပ်မယ်) ----------
-JOBS = {}
-JOBS_LOCK = threading.Lock()
-GPU_LOCK = globals().get("GPU_LOCK") or threading.Lock()
-
-def job_view(j):
-    n = j["n"]
-    st = ["done", "done", "run", "wait"]
-    info = {0: j["msg"], 1: f"{n} အပိုင်း"}
-    s = j["state"]
-    if s == "queue":
-        info[2] = "တန်းစီစောင့်နေသည် (အရင်လူ ပြီးမှ စမည်)"
-    elif s == "run":
-        info[2] = f"{j['done']}/{n} · {mmss(time.time() - j['t0'])}"
-    elif s == "done":
-        st = ["done"] * 4
-        info[2] = f"{n}/{n} · {mmss(j['t_end'] - j['t0'])}"
-    elif s == "error":
-        st[2] = "err"; info[2] = f"အမှား: {j['err']}"
-    else:
-        st[2] = "err"; info[2] = "ရပ်လိုက်ပါပြီ"
-    return render(st, info)
-
-def run_job(j, chunks, ref, steps):
-    try:
-        with GPU_LOCK:
-            if j["cancel"]:
-                j["state"] = "cancelled"; return
-            j["state"] = "run"; j["t0"] = time.time()
-            parts = []
-            for c in chunks:
-                if j["cancel"]:
-                    j["state"] = "cancelled"; return
-                parts.append(gen_chunk(c, ref, steps))
-                j["done"] += 1
-            p = f"work/out_{uuid.uuid4().hex[:8]}.wav"
-            sf.write(p, join_audio(parts), SR)
-            j["path"] = p; j["t_end"] = time.time(); j["state"] = "done"
-    except Exception as e:
-        j["err"] = str(e)[:300]; j["state"] = "error"
-
-def start_job(key, ref_audio, text, quality):
-    ok, msg, rid = check_key(key)
-    if not ok or not ref_audio or not text or not text.strip():
-        return "", render(["err", "wait", "wait", "wait"],
-                          {0: msg if not ok else "အချက်အလက်မပြည့်စုံပါ"}), gr.Timer(active=False)
-    chunks = split_text(text)
-    jid = uuid.uuid4().hex[:12]
-    now = time.time()
-    j = dict(state="queue", n=len(chunks), done=0, t0=now, t_end=None, path=None,
-             err="", msg=msg, rid=rid, created=now, cancel=False)
-    with JOBS_LOCK:
-        for k in [k for k, v in JOBS.items()
-                  if now - v["created"] > 7200 and v["state"] != "run" and v["state"] != "queue"]:
-            JOBS.pop(k, None)
-        JOBS[jid] = j
-    threading.Thread(target=run_job, args=(j, chunks, ref_audio, QUALITY.get(quality, 8)),
-                     daemon=True).start()
-    return jid, job_view(j), gr.Timer(active=True)
-
-def poll(jid):
-    j = JOBS.get(jid or "")
-    if not j:
-        return gr.update(), gr.update(), gr.update(), gr.Timer(active=False)
-    html = job_view(j)
-    if j["state"] == "done":
-        return html, j["path"], j["path"], gr.Timer(active=False)
-    if j["state"] in ("error", "cancelled"):
-        return html, None, None, gr.Timer(active=False)
-    return html, gr.update(), gr.update(), gr.update()
-
-def cancel_job(jid):
-    j = JOBS.pop(jid or "", None)
-    if j: j["cancel"] = True
-
 # ---------- Pages ----------
 def show(n):
     return [gr.update(visible=(i == n)) for i in range(4)]
@@ -403,30 +296,13 @@ def login(key):
     gr.Info(msg)
     return show(1) + [key.strip(), f"<div class='badge'>🔑 Key မှန်ပါသည် — {msg}</div>"]
 
-def resume(key, jid):
-    """Page ဖွင့်တိုင်း / လိုင်းပြန်ရတိုင်း — လုပ်လက်စ အလုပ်ရှိရင် ဆက်ပြ"""
-    key = (key or "").strip()
-    nothing = ["", "", "", gr.update(), gr.update(), gr.update(), gr.update()]
-    if not key:
-        return show(0) + nothing
-    ok, msg, rid = check_key(key)
-    if not ok:
-        gr.Warning(msg); return show(0) + nothing
-    badge = f"<div class='badge'>🔑 Key မှန်ပါသည် — {msg}</div>"
-    jid = (jid or "").strip()
-    j = JOBS.get(jid)
-    if j and j.get("rid") == rid:
-        html = job_view(j)
-        if j["state"] == "done":
-            return show(3) + [key, badge, jid, html, j["path"], j["path"], gr.Timer(active=False)]
-        if j["state"] in ("error", "cancelled"):
-            return show(3) + [key, badge, jid, html, None, None, gr.Timer(active=False)]
-        return show(3) + [key, badge, jid, html, None, None, gr.Timer(active=True)]
-    return show(1) + [key, badge, "", gr.update(), gr.update(), gr.update(), gr.update()]
+def login_auto(key):
+    if not (key or "").strip():
+        return show(0) + ["", ""]
+    return login(key)
 
-def logout(jid):
-    cancel_job(jid)
-    return show(0) + ["", "", "", "", gr.Timer(active=False)]
+def logout():
+    return show(0) + ["", "", ""]
 
 def to2(ref):
     if not ref:
@@ -436,11 +312,43 @@ def to2(ref):
 def to3(text):
     if not text or not text.strip():
         gr.Warning("စာထည့်ပါ"); return show(2) + [IDLE, None, None, None]
+    if len(text.strip()) > 1500:
+        gr.Warning("စာရှည်လွန်းပါတယ်။ ကြာနိုင်ပါတယ် — ၁၀၀၀ လုံးအောက် ခွဲထုတ်တာ ပိုကောင်းပါတယ်")
     return show(3) + [render(["run", "wait", "wait", "wait"]), None, None, None]
 
-def restart(jid):
-    cancel_job(jid)
-    return show(1) + [None, None, "", IDLE, None, None, None, "", "", gr.Timer(active=False)]
+def restart():
+    return show(1) + [None, None, "", IDLE, None, None, None, ""]
+
+def generate(key, ref_audio, text, quality):
+    st = ["run", "wait", "wait", "wait"]
+    yield render(st), None, None
+    ok, msg, _ = check_key(key)
+    if not ok or not ref_audio or not text or not text.strip():
+        st[0] = "err"
+        yield render(st, {0: msg if not ok else "အချက်အလက်မပြည့်စုံပါ"}), None, None; return
+    st[0] = "done"; st[1] = "run"; yield render(st, {0: msg}), None, None
+    chunks = split_text(text); n = len(chunks)
+    st[1] = "done"; st[2] = "run"
+    info = {0: msg, 1: f"{n} အပိုင်း", 2: f"စတင်နေသည် 0/{n}"}
+    yield render(st, info), None, None
+    try:
+        steps = QUALITY.get(quality, 8)
+        parts = []
+        t0 = time.time()
+        for i, c in enumerate(chunks, 1):
+            parts.append(gen_chunk(c, ref_audio, steps))
+            el = time.time() - t0
+            eta = el / i * (n - i)
+            info[2] = f"{i}/{n} · {mmss(el)} ကြာပြီ · ကျန် ~{mmss(eta)}"
+            yield render(st, info), None, None
+        p = f"work/out_{uuid.uuid4().hex[:8]}.wav"
+        sf.write(p, join_audio(parts), SR)
+        st[2] = "done"; st[3] = "done"
+        info[2] = f"{n}/{n} · စုစုပေါင်း {mmss(time.time() - t0)}"
+        yield render(st, info), p, p
+    except Exception as e:
+        st[2] = "err"; info[2] = f"အမှား: {e}"
+        yield render(st, info), None, None
 
 def make_mp3(wav_path, name):
     if not wav_path:
@@ -457,9 +365,7 @@ def make_mp3(wav_path, name):
 with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
     gr.Markdown("# 🎙️ မြန်မာ Voice Clone (VoxCPM2)")
     key_info = gr.HTML("")
-    wav_state, key_state, job_state = gr.State(), gr.State(""), gr.State("")
-    job_box = gr.Textbox(visible=False)
-    poll_timer = gr.Timer(2, active=False)
+    wav_state, key_state = gr.State(), gr.State("")
 
     with gr.Column(visible=True) as p0:
         gr.Markdown("### 🔑 Key ထည့်ပါ")
@@ -497,6 +403,53 @@ with gr.Blocks(css=CSS, theme=gr.themes.Base()) as demo:
 
     pages = [p0, p1, p2, p3]
 
-    # Page ဖွင့်တိုင်း: Key စစ် → လုပ်လက်စအလုပ်ရှိရင် ဆက်ပြ
-    demo.load(None, None, [key_in, job_box], js=JS_LOAD) \
-        .then(resume, [key_in, j
+    demo.load(None, None, key_in, js=JS_LOAD_KEY) \
+        .then(login_auto, key_in, pages + [key_state, key_info])
+    demo.load(track_visit, None, None)
+    if hasattr(gr, "Timer"):
+        timer = gr.Timer(30)
+        timer.tick(heartbeat, key_state, None)
+
+    next0.click(login, key_in, pages + [key_state, key_info]) \
+         .then(None, key_state, None, js=JS_SAVE_KEY)
+    logout_btn.click(logout, None, pages + [key_in, key_state, key_info]) \
+              .then(None, None, None, js=JS_CLEAR_KEY)
+
+    up.change(prepare_ref, up, ref_prev)
+    next1.click(to2, ref_prev, pages)
+    back2.click(lambda: show(1), None, pages)
+    clean_btn.click(lambda: "", None, text)
+    next2.click(to3, text, pages + [status, out_audio, wav_state, dl_file]) \
+         .then(generate, [key_state, ref_prev, text, quality],
+               [status, out_audio, wav_state])
+
+    dl_btn.click(make_mp3, [wav_state, fname], dl_file) \
+          .then(None, dl_file, None, js=JS_DOWNLOAD)
+
+    again.click(restart, None, pages + [up, ref_prev, text, status,
+                                        out_audio, wav_state, dl_file, fname])
+
+# ---------- Launch (cell ပြီးသွားမယ်၊ server နောက်ကွယ်မှာ ဆက်အလုပ်လုပ်မယ်) ----------
+demo.queue()
+_app, _local, _share = demo.launch(share=True, prevent_thread_lock=True,
+                                   quiet=True, show_error=True)
+URL = _share or _local
+
+try:
+    from IPython.display import display, HTML
+    display(HTML(f"""
+    <div style="background:#000;border:2px solid #ec4899;border-radius:14px;padding:18px;
+                text-align:center;font-family:sans-serif;color:#fff">
+      <div style="font-size:20px;font-weight:700;margin-bottom:12px">✅ Website အဆင်သင့်ဖြစ်ပါပြီ</div>
+      <a href="{URL}" target="_blank"
+         style="display:block;padding:14px;border-radius:10px;color:#fff;text-decoration:none;
+                font-size:18px;font-weight:700;background:linear-gradient(90deg,#ec4899,#3b82f6)">
+         🌐 WEBSITE ဖွင့်ရန်</a>
+      <div style="margin-top:10px;font-size:14px;color:#aaa;word-break:break-all">{URL}</div>
+      <div style="margin-top:10px;font-size:13px;color:#aaa">
+         Link မဖွင့်ရင် အပေါ်က URL ကို Copy လုပ်ပြီး Browser မှာ Paste လုပ်ပါ။<br>
+         ရပ်သွားရင် ဒီ cell ကို ပြန် Run ပါ (Link အသစ်ထွက်မယ်)။</div>
+    </div>"""))
+except Exception:
+    pass
+print("🌐 WEBSITE LINK:", URL)
